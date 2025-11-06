@@ -49,10 +49,16 @@ public class AssetOpenerWindow : EditorWindow
     [SerializeField] private List<AssetNote> _assetList = new List<AssetNote>();
     private ReorderableList _assetReorderable;
 
-    // --- Scene GameObject persistence across scene changes ---
-    [SerializeField] private GameObject _sceneObject;
-    [SerializeField] private GlobalObjectId _sceneObjectId;
-    private GameObject _lastSceneObjectSeen;
+    // --- Scene GameObject list (sticky selection) ---
+    [System.Serializable]
+    public class SceneGameObject
+    {
+        public GameObject gameObject;
+        public GlobalObjectId objectId;
+    }
+
+    [SerializeField] private List<SceneGameObject> _sceneGameObjectList = new List<SceneGameObject>();
+    private ReorderableList _sceneGameObjectReorderable;
 
     [MenuItem("Tools/Asset Opener")]
     public static void ShowWindow()
@@ -73,6 +79,7 @@ public class AssetOpenerWindow : EditorWindow
         BuildSceneReorderableList();
         BuildFolderReorderableList();
         BuildAssetReorderableList();
+        BuildSceneGameObjectReorderableList();
 
         EditorSceneManager.activeSceneChanged += OnActiveSceneChanged;
         EditorSceneManager.sceneOpened += OnSceneOpened;
@@ -89,23 +96,20 @@ public class AssetOpenerWindow : EditorWindow
 
     private void OnActiveSceneChanged(Scene oldScene, Scene newScene)
     {
-        TryRestoreSelectedGO();
+        TryRestoreAllGameObjects();
         Repaint();
     }
 
     private void OnSceneOpened(Scene scene, OpenSceneMode mode)
     {
-        TryRestoreSelectedGO();
+        TryRestoreAllGameObjects();
         Repaint();
     }
 
     private void OnHierarchyChange()
     {
-        if (_sceneObject == null && IsStickyIdValid())
-        {
-            TryRestoreSelectedGO();
-            Repaint();
-        }
+        TryRestoreAllGameObjects();
+        Repaint();
     }
 
     // ===================== GUI =====================
@@ -129,7 +133,7 @@ public class AssetOpenerWindow : EditorWindow
         DrawAssetListBlock();
         EditorGUILayout.Space(10);
 
-        DrawSceneObjectBlock();
+        DrawSceneGameObjectBlock();
     }
 
     // --- Collaborator (profile) UI ---
@@ -769,43 +773,46 @@ public class AssetOpenerWindow : EditorWindow
 
     // ===================== Selection helpers (sticky) =====================
 
-    private void SetSelectedGO(GameObject go, bool alsoSelect, bool ping)
+    private void UpdateGameObjectId(SceneGameObject item)
     {
-        _sceneObject = go;
-        _lastSceneObjectSeen = go;
-
-        if (go != null)
+        if (item == null) return;
+        if (item.gameObject != null)
         {
-            _sceneObjectId = GlobalObjectId.GetGlobalObjectIdSlow(go);
-            if (alsoSelect) SelectInHierarchy(go, ping);
+            item.objectId = GlobalObjectId.GetGlobalObjectIdSlow(item.gameObject);
         }
         else
         {
-            _sceneObjectId = default;
+            item.objectId = default;
         }
     }
 
-    private bool IsStickyIdValid()
+    private bool IsStickyIdValid(GlobalObjectId id)
     {
-        return !_sceneObjectId.Equals(default(GlobalObjectId));
+        return !id.Equals(default(GlobalObjectId));
     }
 
-    private bool TryRestoreSelectedGO()
+    private void TryRestoreAllGameObjects()
     {
-        if (!IsStickyIdValid()) return false;
+        if (_sceneGameObjectList == null) return;
 
-        var obj = GlobalObjectId.GlobalObjectIdentifierToObjectSlow(_sceneObjectId);
-        var go = obj as GameObject;
-        if (go != null)
+        foreach (var item in _sceneGameObjectList)
         {
-            _sceneObject = go;
-            _lastSceneObjectSeen = go;
-            Selection.activeObject = go;
-            return true;
+            if (item == null) continue;
+            
+            if (IsStickyIdValid(item.objectId))
+            {
+                var obj = GlobalObjectId.GlobalObjectIdentifierToObjectSlow(item.objectId);
+                var go = obj as GameObject;
+                if (go != null)
+                {
+                    item.gameObject = go;
+                }
+                else
+                {
+                    item.gameObject = null;
+                }
+            }
         }
-
-        _sceneObject = null;
-        return false;
     }
 
     private static void SelectInHierarchy(GameObject go, bool ping)
@@ -832,50 +839,97 @@ public class AssetOpenerWindow : EditorWindow
             "OK");
     }
 
-    // ===================== Scene GameObject UI =====================
+    // ===================== Scene GameObject List UI =====================
 
-    private void DrawSceneObjectBlock()
+    private void BuildSceneGameObjectReorderableList()
     {
-        EditorGUILayout.LabelField("Scene GameObject (Sticky Selection)", EditorStyles.boldLabel);
+        if (_sceneGameObjectList == null) _sceneGameObjectList = new List<SceneGameObject>();
+        _sceneGameObjectReorderable = new ReorderableList(_sceneGameObjectList, typeof(SceneGameObject), true, true, true, true);
 
-        var newGO = (GameObject)EditorGUILayout.ObjectField(
-            new GUIContent("GameObject", "Drag a GameObject from the active scene"),
-            _sceneObject,
-            typeof(GameObject),
-            true);
-
-        if (newGO != _sceneObject)
+        _sceneGameObjectReorderable.drawHeaderCallback = rect =>
         {
-            SetSelectedGO(newGO, alsoSelect: true, ping: true);
-        }
+            EditorGUI.LabelField(rect, "Scene GameObject List (Sticky Selection)");
+        };
 
-        using (new EditorGUI.DisabledScope(_sceneObject == null))
+        _sceneGameObjectReorderable.onAddCallback = list => 
         {
-            if (GUILayout.Button(new GUIContent("Select Now", "Selects and pings the referenced GameObject in the Hierarchy")))
+            var newItem = new SceneGameObject();
+            _sceneGameObjectList.Add(newItem);
+        };
+
+        _sceneGameObjectReorderable.drawElementCallback = (rect, index, active, focused) =>
+        {
+            if (_sceneGameObjectList[index] == null) _sceneGameObjectList[index] = new SceneGameObject();
+            var item = _sceneGameObjectList[index];
+
+            var r = new Rect(rect.x, rect.y + 2, rect.width, EditorGUIUtility.singleLineHeight);
+
+            float btnW = 100f;
+            var fieldRect = new Rect(r.x, r.y, r.width - btnW - 6f, r.height);
+            var btnRect = new Rect(fieldRect.xMax + 6f, r.y, btnW, r.height);
+
+            EditorGUI.BeginChangeCheck();
+            var newGO = (GameObject)EditorGUI.ObjectField(fieldRect, item.gameObject, typeof(GameObject), true);
+            if (EditorGUI.EndChangeCheck())
             {
-                SelectInHierarchy(_sceneObject, ping: true);
+                item.gameObject = newGO;
+                UpdateGameObjectId(item);
             }
-        }
 
-        DrawSelectionDiagnostics();
+            using (new EditorGUI.DisabledScope(item.gameObject == null))
+            {
+                if (GUI.Button(btnRect, "Select"))
+                {
+                    SelectInHierarchy(item.gameObject, ping: true);
+                }
+            }
+
+            // Show warning if GameObject is in a different scene
+            if (item.gameObject != null && item.gameObject.scene.IsValid())
+            {
+                var activeScene = SceneManager.GetActiveScene();
+                if (item.gameObject.scene != activeScene)
+                {
+                    var warningRect = new Rect(r.x, r.y + r.height + 2, r.width, EditorGUIUtility.singleLineHeight);
+                    EditorGUI.HelpBox(warningRect, 
+                        $"In scene '{item.gameObject.scene.name}' (active: '{activeScene.name}')", 
+                        MessageType.Warning);
+                }
+            }
+        };
+
+        _sceneGameObjectReorderable.elementHeightCallback = index =>
+        {
+            if (_sceneGameObjectList == null || index < 0 || index >= _sceneGameObjectList.Count)
+                return EditorGUIUtility.singleLineHeight + 6f;
+
+            var item = _sceneGameObjectList[index];
+            if (item == null) return EditorGUIUtility.singleLineHeight + 6f;
+
+            float baseHeight = EditorGUIUtility.singleLineHeight + 4f;
+            // Add extra height if warning is shown
+            if (item.gameObject != null && item.gameObject.scene.IsValid())
+            {
+                var activeScene = SceneManager.GetActiveScene();
+                if (item.gameObject.scene != activeScene)
+                {
+                    baseHeight += EditorGUIUtility.singleLineHeight + 4f;
+                }
+            }
+            return baseHeight;
+        };
+
+        _sceneGameObjectReorderable.onRemoveCallback = list =>
+        {
+            if (list.index >= 0 && list.index < _sceneGameObjectList.Count) 
+                _sceneGameObjectList.RemoveAt(list.index);
+        };
     }
 
-    private void DrawSelectionDiagnostics()
+    private void DrawSceneGameObjectBlock()
     {
-        if (_sceneObject == null)
-            return;
-
-        var activeScene = SceneManager.GetActiveScene();
-
-        if (!_sceneObject.scene.IsValid())
-            return;
-
-        if (_sceneObject.scene != activeScene)
-        {
-            EditorGUILayout.HelpBox(
-                $"Selected GameObject is in scene '{_sceneObject.scene.name}', but the active scene is '{activeScene.name}'.",
-                MessageType.Warning);
-        }
+        EditorGUILayout.LabelField("Scene GameObject List", EditorStyles.boldLabel);
+        _sceneGameObjectReorderable.DoLayoutList();
     }
 
     // ===================== Persistence helpers (profiles) ====================
@@ -889,8 +943,8 @@ public class AssetOpenerWindow : EditorWindow
             if (_sceneList == null) _sceneList = new List<SceneNote>();
             if (_folderList == null) _folderList = new List<DefaultAsset>();
             if (_assetList == null) _assetList = new List<AssetNote>();
-            _sceneObjectId = default;
-            TryRestoreSelectedGO();
+            if (_sceneGameObjectList == null) _sceneGameObjectList = new List<SceneGameObject>();
+            TryRestoreAllGameObjects();
             return;
         }
 
@@ -901,8 +955,8 @@ public class AssetOpenerWindow : EditorWindow
         _sceneList = new List<SceneNote>(p.sceneNotes ?? new List<SceneNote>());
         _folderList = new List<DefaultAsset>(p.folderList ?? new List<DefaultAsset>());
         _assetList = new List<AssetNote>(p.assetNotes ?? new List<AssetNote>());
-        _sceneObjectId = p.sceneObjectId;
-        TryRestoreSelectedGO();
+        _sceneGameObjectList = new List<SceneGameObject>(p.sceneGameObjects ?? new List<SceneGameObject>());
+        TryRestoreAllGameObjects();
 
         _collaboratorName = p.name;
         RebuildAllReorderables();
@@ -920,12 +974,22 @@ public class AssetOpenerWindow : EditorWindow
         if (_sceneList == null) _sceneList = new List<SceneNote>();
         if (_folderList == null) _folderList = new List<DefaultAsset>();
         if (_assetList == null) _assetList = new List<AssetNote>();
+        if (_sceneGameObjectList == null) _sceneGameObjectList = new List<SceneGameObject>();
+
+        // Update object IDs before saving
+        foreach (var item in _sceneGameObjectList)
+        {
+            if (item != null)
+            {
+                UpdateGameObjectId(item);
+            }
+        }
 
         p.levelScenes = new List<SceneAsset>(_levelScenes);
         p.sceneNotes = new List<SceneNote>(_sceneList);
         p.folderList = new List<DefaultAsset>(_folderList);
         p.assetNotes = new List<AssetNote>(_assetList);
-        p.sceneObjectId = _sceneObjectId;
+        p.sceneGameObjects = new List<SceneGameObject>(_sceneGameObjectList);
         p.name = _collaboratorName ?? p.name;
 
         EditorUtility.SetDirty(_profilesData);
@@ -939,6 +1003,7 @@ public class AssetOpenerWindow : EditorWindow
         BuildSceneReorderableList();
         BuildFolderReorderableList();
         BuildAssetReorderableList();
+        BuildSceneGameObjectReorderableList();
         Repaint();
     }
 

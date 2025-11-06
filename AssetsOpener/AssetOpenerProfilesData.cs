@@ -16,7 +16,7 @@ public class AssetOpenerProfilesData : ScriptableObject
         public List<AssetOpenerWindow.SceneNote> sceneNotes = new List<AssetOpenerWindow.SceneNote>();
         public List<DefaultAsset> folderList = new List<DefaultAsset>();
         public List<AssetOpenerWindow.AssetNote> assetNotes = new List<AssetOpenerWindow.AssetNote>();
-        public GlobalObjectId sceneObjectId;
+        public List<AssetOpenerWindow.SceneGameObject> sceneGameObjects = new List<AssetOpenerWindow.SceneGameObject>();
     }
 
     public List<Profile> profiles = new List<Profile>();
